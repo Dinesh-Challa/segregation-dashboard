@@ -36,12 +36,8 @@ def setFigParams(fig, axis_title_font=20, axis_tick_font=16, bar_gap=0.4):
     fig.update_layout(
         xaxis_title="",
         yaxis_title="Segregation Instances",
-        xaxis=dict(
-            tickfont=dict(size=axis_tick_font, color="black")
-        ),
-        yaxis=dict(
-            tickfont=dict(size=axis_tick_font, color="black")
-        ),
+        xaxis=dict(tickfont=dict(size=axis_tick_font, color="black")),
+        yaxis=dict(tickfont=dict(size=axis_tick_font, color="black")),
         xaxis_title_font=dict(size=axis_title_font),
         yaxis_title_font=dict(size=axis_title_font, color="black"),
         bargap=bar_gap,
@@ -54,6 +50,34 @@ def filter_dataframe(df, filters):
         if value != "All" and column in df_filterd.columns:
             df_filterd = df_filterd[df_filterd[column] == value]
     return df_filterd
+
+
+def top_n_rules(df: pd.DataFrame, n: int):
+    """
+    Calculate the top n rules for each unique level in a categorical column of a DataFrame.
+
+    Parameters:
+    df (pd.DataFrame): The DataFrame containing the data.
+
+    Returns:
+    pd.DataFrame: A DataFrame containing the top n rules with the highest percentages
+    """
+    rule_counts = df.groupby(["RuleTitle"]).size().reset_index(name="Instances")
+
+    rule_counts["% Total Instances"] = (
+        rule_counts["Instances"] / rule_counts["Instances"].sum() * 100
+    ).round(2)
+
+    rule_counts = rule_counts.sort_values(
+        by="% Total Instances", ascending=False, ignore_index=True
+    )
+
+    if n == None:
+        top_n_rule_counts = rule_counts.copy()
+    else:
+        top_n_rule_counts = rule_counts.copy().head(n)
+
+    return top_n_rule_counts
 
 
 viz = ["Segregation Over Time", "Segregation Period", "Rule Violations"]
@@ -189,3 +213,92 @@ elif st.session_state["viz_option"] == viz[1]:
             yaxis_title_font=dict(size=20, color="black"),
         )
         st.plotly_chart(fig_box)
+
+elif st.session_state["viz_option"] == viz[2]:
+    with st.sidebar:
+        facilities = sorted(seg_violations_df["RHUnit"].unique().tolist())
+        facilities.insert(0, "All")
+
+        fy = sorted(seg_violations_df["FY"].unique().tolist())
+        fy.insert(0, "All")
+
+        race = sorted(seg_violations_df["Race"].unique().tolist())
+        race.insert(0, "All")
+
+        age = sorted(seg_violations_df["AgeCat"].unique().tolist())
+        age.insert(0, "All")
+
+        st.selectbox(
+            options=facilities, index=0, label="Facility", key="facility_option"
+        )
+        st.selectbox(options=fy, index=0, label="FY", key="fy_option")
+        st.selectbox(options=race, index=0, label="Race", key="race_option")
+        st.selectbox(
+            options=age,
+            index=0,
+            label="Age Group",
+            key="age_option",
+        )
+
+        filters = {
+            "RHUnit": st.session_state["facility_option"],
+            "FY": st.session_state["fy_option"],
+            "Race": st.session_state["race_option"],
+            "AgeCat": st.session_state["age_option"],
+        }
+
+        seg_violations_df_filtered = filter_dataframe(seg_violations_df, filters)
+
+    col1, col2 = st.columns([0.7, 1])
+
+    with col1:
+        st.toggle(label="See Full Breakdown", value=True, key="breakdown_option")
+
+    if not st.session_state["breakdown_option"]:
+        with col2:
+            top_5_rules_df = top_n_rules(seg_violations_df_filtered, n=5)
+            labels = top_5_rules_df["RuleTitle"].to_list()
+            values = top_5_rules_df["% Total Instances"].to_list()
+            labels.insert(-1, "Other")
+            values.insert(-1, 100 - sum(values))
+
+            fig_pie = px.pie(
+                names=labels,
+                values=values,
+                hole=0.5,
+                width=1000,
+                height=500,
+                opacity=0.8,
+            )
+            st.plotly_chart(fig_pie)
+
+    elif st.session_state["breakdown_option"]:
+        with col2:
+            top_5_rules_df = top_n_rules(seg_violations_df_filtered, n=5)
+            labels = top_5_rules_df["RuleTitle"].to_list()
+            values = top_5_rules_df["% Total Instances"].to_list()
+            labels.insert(-1, "Other")
+            values.insert(-1, 100 - sum(values))
+
+            fig_pie = px.pie(
+                names=labels,
+                values=values,
+                hole=0.5,
+                width=1000,
+                height=500,
+                opacity=0.8,
+            )
+            st.plotly_chart(fig_pie)
+
+        with col1:
+            top_n_rules_df = top_n_rules(seg_violations_df_filtered, n=None)
+            st.dataframe(data=top_n_rules_df, hide_index=True, use_container_width=True)
+
+    st.divider()
+    st.write(
+        """
+                The _Pie Chart_ represents the most frequently violated rules as a percentage of total rule violations.
+                
+                The category _Other_ encompasses less frequently committed violations. Refer to the table for a full breakdown.
+                """
+    )
