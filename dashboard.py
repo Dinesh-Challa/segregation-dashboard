@@ -10,9 +10,11 @@ cwd = os.getcwd()
 im = Image.open(os.path.join(cwd, "assets", "umn_icon.jpg"))
 
 # Load Data
-segregation_df = pd.read_csv(os.path.join(cwd, "data", "segregation.csv"))
-seg_violations_df = pd.read_csv(os.path.join(cwd, "data", "seg_adm_merged.csv"))
-# infractions_df = pd.read_csv(os.path.join(cwd, "data", "infractions.csv"))
+segregation_df = pd.read_csv(os.path.join(cwd, "data", "unique_segregations.csv"))
+seg_violations_df = pd.read_csv(
+    os.path.join(cwd, "data", "violations_leading_to_segregation.csv")
+)
+population_df = pd.read_csv(os.path.join(cwd, "data", "population.csv"))
 
 seg_violations_df.rename(columns={"PenaltyDays": "SegDays"}, inplace=True)
 
@@ -29,13 +31,19 @@ st.markdown(
 )
 
 
-def setFigParams(fig, axis_title_font=20, axis_tick_font=16, bar_gap=0.4):
+def setFigParams(
+    fig,
+    title_yaxis="Segregation Instances",
+    axis_title_font=20,
+    axis_tick_font=16,
+    bar_gap=0.4,
+):
     fig.update_traces(marker=dict(line=dict(width=1)))
     fig.update_traces(marker_color="#707B7C")
     fig.update_yaxes(showgrid=True, gridcolor="#CCCCCC")
     fig.update_layout(
         xaxis_title="",
-        yaxis_title="Segregation Instances",
+        yaxis_title=title_yaxis,
         xaxis=dict(tickfont=dict(size=axis_tick_font, color="black")),
         yaxis=dict(tickfont=dict(size=axis_tick_font, color="black")),
         xaxis_title_font=dict(size=axis_title_font),
@@ -80,6 +88,16 @@ def top_n_rules(df: pd.DataFrame, n: int):
     return top_n_rule_counts
 
 
+# Function to get fiscal year based on date
+def get_fiscal_year(date):
+    for fy_key, fy_value in fy.items():
+        start_date = pd.to_datetime(fy_value[0])
+        end_date = pd.to_datetime(fy_value[1])
+        if start_date <= date < end_date:
+            return fy_key
+    return None
+
+
 viz = ["Segregation Over Time", "Segregation Period", "Rule Violations"]
 
 with st.sidebar:
@@ -105,18 +123,25 @@ if st.session_state["viz_option"] == viz[0]:
     }
     segregation_df_filtered = filter_dataframe(segregation_df, filters)
 
+    population_df_filtered = population_df[
+        population_df["RHUnit"].isin(segregation_df_filtered["RHUnit"].unique())
+    ]
+
+    population_df_filtered = filter_dataframe(population_df_filtered, filters)
+
     col1, col2 = st.columns([0.2, 1])
 
     with col1:
-        # value_options = st.radio(
-        #     "Segregation Instances:",
-        #     ["Raw Count", "Percentage of Avg. Population"],
-        #     index=1,
-        # )
         time = ["By FY", "By Month and Year"]
         st.radio("Time", options=time, key="time_option")
 
-    if st.session_state["time_option"] == time[0]:
+        seg_instances = ["Count", "Percentage of Total Population"]
+        st.radio(
+            "Segregation Instances",
+            options=seg_instances,
+            key="seg_instance_option",
+        )
+
         fy_counts = (
             segregation_df_filtered.groupby(["FY"])
             .size()
@@ -124,6 +149,47 @@ if st.session_state["viz_option"] == viz[0]:
             .sort_values(by=["FY"], ascending=[True])
         )
 
+        fy_population = (
+            population_df_filtered.groupby(["FY"])["Avg Population"].sum().reset_index()
+        )
+
+        segregation_df_filtered["SegStartDate"] = pd.to_datetime(
+            segregation_df_filtered["SegStartDate"]
+        )
+        segregation_df_filtered["Date"] = segregation_df_filtered[
+            "SegStartDate"
+        ].dt.strftime("%Y-%m")
+
+        ym_counts = (
+            segregation_df_filtered.groupby(["Date"])
+            .size()
+            .reset_index(name="Segregation Instances")
+            .sort_values(by=["Date"], ascending=[True])
+        )
+        fy = {
+            "FY19": ["7/1/2018", "7/1/2019"],
+            "FY20": ["7/1/2019", "7/1/2020"],
+            "FY21": ["7/1/2020", "7/1/2021"],
+            "FY22": ["7/1/2021", "7/1/2022"],
+        }
+
+        ym_counts["Date"] = pd.to_datetime(ym_counts["Date"])
+        ym_counts["FY"] = ym_counts["Date"].apply(get_fiscal_year)
+
+        fy_counts = pd.merge(fy_counts, fy_population, on=["FY"], how="inner")
+        fy_counts["Segregation Rate"] = (
+            fy_counts["Segregation Instances"] * 100 / fy_counts["Avg Population"]
+        ).round(2)
+
+        ym_counts = pd.merge(ym_counts, fy_population, on=["FY"], how="inner")
+        ym_counts["Segregation Rate"] = (
+            ym_counts["Segregation Instances"] * 100 / ym_counts["Avg Population"]
+        ).round(2)
+
+    if (
+        st.session_state["time_option"] == time[0]
+        and st.session_state["seg_instance_option"] == seg_instances[0]
+    ):
         with col2:
             fig = px.bar(
                 fy_counts,
@@ -139,27 +205,53 @@ if st.session_state["viz_option"] == viz[0]:
             st.write(
                 "Every time an inmate is put in segregation, it is counted as an _instance of segregation_."
             )
-    elif st.session_state["time_option"] == time[1]:
-        segregation_df_filtered["SegStartDate"] = pd.to_datetime(
-            segregation_df_filtered["SegStartDate"]
-        )
-        segregation_df_filtered["Date"] = segregation_df_filtered[
-            "SegStartDate"
-        ].dt.strftime("%Y-%m")
-
-        ym_counts = (
-            segregation_df_filtered.groupby(["Date"])
-            .size()
-            .reset_index(name="Segregation Instances")
-            .sort_values(by=["Date"], ascending=[True])
-        )
-
+    elif (
+        st.session_state["time_option"] == time[0]
+        and st.session_state["seg_instance_option"] == seg_instances[1]
+    ):
+        with col2:
+            fig = px.bar(
+                fy_counts,
+                x="FY",
+                y="Segregation Rate",
+                width=700,
+                height=500,
+                text="Segregation Rate",
+            )
+            setFigParams(fig=fig, title_yaxis="Segregation Rate (%)")
+            st.plotly_chart(fig, theme="streamlit", use_container_width=False)
+            st.divider()
+            st.write(
+                "Every time an inmate is put in segregation, it is counted as an _instance of segregation_."
+            )
+    elif (
+        st.session_state["time_option"] == time[1]
+        and st.session_state["seg_instance_option"] == seg_instances[0]
+    ):
         with col2:
             fig = px.bar(
                 ym_counts, x="Date", y="Segregation Instances", width=900, height=500
             )
             setFigParams(fig=fig, bar_gap=0.2)
             st.plotly_chart(fig, theme="streamlit", use_container_width=False)
+            st.write(
+                "Every time an inmate is put in segregation, it is counted as an _instance of segregation_."
+            )
+    elif (
+        st.session_state["time_option"] == time[1]
+        and st.session_state["seg_instance_option"] == seg_instances[1]
+    ):
+        with col2:
+            fig = px.bar(
+                ym_counts,
+                x="Date",
+                y="Segregation Rate",
+                width=900,
+                height=500,
+            )
+            setFigParams(fig=fig, title_yaxis="Segregation Rate (%)")
+            st.plotly_chart(fig, theme="streamlit", use_container_width=False)
+            st.divider()
             st.write(
                 "Every time an inmate is put in segregation, it is counted as an _instance of segregation_."
             )
